@@ -47,6 +47,22 @@ def get_params():
     return parser.parse_args()
 
 
+def get_file_content(file):
+    with open(file) as stream:
+        return stream.read()
+
+
+def write_content(file, content):
+    with open(file, mode='w') as stream:
+        stream.write(content)
+
+
+def prepend_stdafx(file):
+    content = get_file_content(file)
+    content = '#include "stdafx.h"\n' + content
+    write_content(file, content)
+
+
 def main():
     args = get_params()
 
@@ -61,8 +77,11 @@ def main():
 
     all_target_files = get_all_files(args.path, args.ext, args.exdirs.split(" "), args.exfiles.split(" "))
 
-    print(*all_target_files, sep="\n")
-    print("Found", len(all_target_files), "files")
+    for file in all_target_files:
+        prepend_stdafx(file)
+        print("Wrote to", file)
+
+    print("Modified", len(all_target_files), "files")
 
 
 if __name__ == "__main__":
