@@ -4,19 +4,9 @@ from os import listdir
 from os.path import isfile, join, splitext
 
 
-def do(command):
+def execute_command(command):
     print(command)
     return subprocess.run(command, shell=True, capture_output=True)
-
-
-def file_len(filename):
-    i = 0
-
-    with open(filename, errors='ignore') as f:
-        for i, l in enumerate(f, 1):
-            pass
-
-    return i
 
 
 def get_all_files(path, extensions, to_exclude_dirs=[], to_exclude_files=[]):
@@ -29,8 +19,10 @@ def get_all_files(path, extensions, to_exclude_dirs=[], to_exclude_files=[]):
             is_file = isfile(full_path)
             _, file_extension = splitext(full_path)
 
+            stripped_file_extension = file_extension.strip(".")
+
             extension_available = not extensions and not file_extension or \
-                file_extension and file_extension.strip(".") in extensions
+                stripped_file_extension in extensions
 
             if is_file and extension_available and f not in to_exclude_files:
                 all_files.append(full_path)
@@ -50,49 +42,61 @@ def get_all_files(path, extensions, to_exclude_dirs=[], to_exclude_files=[]):
 def get_params():
     parser = ArgumentParser()
     parser.add_argument('--path', help='Path to the target directory')
-    parser.add_argument('--ext', help='Target files extension')
-    parser.add_argument('--exdirs', help='Directories to exclude from search')
-    parser.add_argument('--exfiles', help='File names to exclude')
+    parser.add_argument('--extension', help='Target files extension')
+    parser.add_argument('--dir_exclude', help='Directories to exclude from search')
+    parser.add_argument('--file_exclude', help='File names to exclude')
+    parser.add_argument('--prepend_pch', help='Insert include for passed header file first for all selected files')
     return parser.parse_args()
 
 
-def get_file_charset(file):
-    result = do('file -bi ' + file)
-    # parse string like this one: type/x-c++; charset=cp1251
-    _, charset = result.stdout.split(b';')
-    charset_value = charset.split(b'=')
-    return charset_value[1].strip().decode('ascii')
+class PrependPchWorker:
+    def __init__(self, target_files, pch):
+        self.__target_files = target_files
+        self.__pch = pch
 
+    def do(self):
+        for file in self.__target_files:
+            self.__prepend_pch(file, self.__pch)
+            print('Wrote to', file)
 
-def convert_file_to_utf8(file, from_encoding):
-    tmp_file = file + '-tmp'
-    do('iconv --from-code={0} --to-code=UTF-8 "{1}" > "{2}"'.format(from_encoding, file, tmp_file))
-    do('rm "{0}"'.format(file))
-    do('mv "{0}" "{1}"'.format(tmp_file, file))
+        print('Modified', len(self.__target_files), 'files')
 
+    def __get_file_content(self, file):
+        try:
+            with open(file) as stream:
+                return stream.read()
 
-def get_file_content(file):
-    try:
-        with open(file) as stream:
-            return stream.read()
+        except UnicodeDecodeError:
+            charset = self.__get_file_charset(file)
+            self.__convert_file_to_utf8(file, charset)
 
-    except UnicodeDecodeError:
-        charset = get_file_charset(file)
-        convert_file_to_utf8(file, charset)
+            with open(file) as stream:
+                return stream.read()
 
-        with open(file) as stream:
-            return stream.read()
+    def __prepend_pch(self, file, pch):
+        content = self.__get_file_content(file)
+        content = '#include "{0}"\n'.format(pch) + content
+        self.__write_content(file, content)
 
+    @staticmethod
+    def __write_content(file, content):
+        with open(file, mode='w') as stream:
+            stream.write(content)
 
-def write_content(file, content):
-    with open(file, mode='w') as stream:
-        stream.write(content)
+    @staticmethod
+    def __get_file_charset(file):
+        result = execute_command('file -bi ' + file)
+        # parse string like this one: type/x-c++; charset=cp1251
+        _, charset = result.stdout.split(b';')
+        charset_value = charset.split(b'=')
+        return charset_value[1].strip().decode('ascii')
 
-
-def prepend_stdafx(file):
-    content = get_file_content(file)
-    content = '#include "stdafx.h"\n' + content
-    write_content(file, content)
+    @staticmethod
+    def __convert_file_to_utf8(file, from_encoding):
+        tmp_file = file + '-tmp'
+        execute_command('iconv --from-code={0} --to-code=UTF-8 "{1}" > "{2}"'.format(from_encoding, file, tmp_file))
+        execute_command('rm "{0}"'.format(file))
+        execute_command('mv "{0}" "{1}"'.format(tmp_file, file))
 
 
 def main():
@@ -101,19 +105,22 @@ def main():
     if not args.path:
         raise Exception('--path parameter not specified')
 
-    if not args.ext:
-        raise Exception('--ext parameter not specified')
+    if not args.extension:
+        raise Exception('--extension parameter not specified')
 
-    if not args.exdirs:
-        raise Exception('--exdirs parameter not specified')
+    if not args.dir_exclude:
+        raise Exception('--dir_exclude parameter not specified')
 
-    all_target_files = get_all_files(args.path, args.ext, args.exdirs.split(" "), args.exfiles.split(" "))
+    if not args.prepend_pch:
+        raise Exception('--prepend_pch parameter not specified but this is only option')
 
-    for file in all_target_files:
-        prepend_stdafx(file)
-        print('Wrote to', file)
+    all_target_files = get_all_files(args.path,
+                                     args.extension.split(),
+                                     args.dir_exclude.split(),
+                                     args.file_exclude.split())
 
-    print('Modified', len(all_target_files), 'files')
+    worker = PrependPchWorker(all_target_files, args.prepend_pch)
+    worker.do()
 
 
 if __name__ == '__main__':
